@@ -1,6 +1,6 @@
 {
   "identifier": "henry.llm.ocr",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "category": "ocr",
   "name": "LLM OCR",
   "summary": "LLM powered OCR",
@@ -21,7 +21,6 @@
         "placeholderText": "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
       }
     },
-
     {
       "identifier": "ocrMode",
       "type": "menu",
@@ -43,7 +42,6 @@
         }
       ]
     },
-
     {
       "identifier": "visionModel",
       "type": "menu",
@@ -61,6 +59,27 @@
         {
           "title": "自定义模型",
           "value": "custom"
+        }
+      ]
+    },
+    {
+      "identifier": "thinkingMode",
+      "type": "menu",
+      "title": "思考模式",
+      "desc": "控制兼容服务商的 thinking 参数。默认模式不发送该字段，交给服务商决定；开启或关闭时会分别发送 {\"thinking\":{\"type\":\"enabled\"}} 或 {\"thinking\":{\"type\":\"disabled\"}}。",
+      "defaultValue": "default",
+      "menuValues": [
+        {
+          "title": "默认",
+          "value": "default"
+        },
+        {
+          "title": "开启思考",
+          "value": "enabled"
+        },
+        {
+          "title": "关闭思考",
+          "value": "disabled"
         }
       ]
     },

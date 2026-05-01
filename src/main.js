@@ -2,24 +2,8 @@
 
 var lang = require('./lang.js');
 
-function supportLanguages() {
-  return lang.supportLanguages.map(([standardLang]) => standardLang);
-}
-
-function buildHeader(apiKey) {
-  return {
-    'Authorization': `Bearer ${apiKey}`,
-    'Content-Type': 'application/json',
-  };
-}
-
-
-function createUserPrompt() {
-  if ($option.ocrMode === 'custom') {
-    return $option.ocrUserPrompt 
-  }
-  else if ($option.ocrMode === 'markdown') {
-    return `Accurately extract all content from the image including:
+const DEFAULT_MARKDOWN_SYSTEM_PROMPT = `You are a helpful assistant that can accurately extract and convert content from images into clean Markdown format.`;
+const DEFAULT_MARKDOWN_USER_PROMPT = `Accurately extract all content from the image including:
 - Text (preserve original languages)
 - Mathematical equations (convert to LaTeX)
 - Tables (format as Markdown tables)
@@ -31,35 +15,101 @@ Convert everything to clean Markdown format while:
 3. Using $$ LaTeX $$ for equations
 4. Creating Markdown tables for tabular data
 5. Never adding interpretations or explanations`;
-  } else {
-    return `Please accurately identify the text content in the image:
+const DEFAULT_PLAINTEXT_SYSTEM_PROMPT = `You are a helpful assistant that can accurately extract and convert content from images into clean plaintext.`;
+const DEFAULT_PLAINTEXT_USER_PROMPT = `Please accurately identify the text content in the image:
 - Preserve the original language (retain the original arrangement in multilingual contexts)
 - Keep all special symbols, numbers, and punctuation
 - Maintain the original layout structure (paragraphs, line breaks, indentations, etc.)`;
+
+function supportLanguages() {
+  return lang.supportLanguages.map(([standardLang]) => standardLang);
+}
+
+function buildHeader(apiKey) {
+  return {
+    'Authorization': `Bearer ${apiKey}`,
+    'Content-Type': 'application/json',
+  };
+}
+
+function textOrEmpty(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function completeWithError(completion, type, message, addition) {
+  return completion({
+    error: {
+      type,
+      message,
+      addition,
+    },
+  });
+}
+
+function parseNumberOption(value, defaultValue) {
+  const text = textOrEmpty(value);
+  if (!text) {
+    return defaultValue;
+  }
+
+  const number = Number(text);
+  return Number.isFinite(number) ? number : defaultValue;
+}
+
+function getApiKeys() {
+  return textOrEmpty($option.apiKeys)
+    .split(',')
+    .map((key) => key.trim())
+    .filter(Boolean);
+}
+
+function getModelName() {
+  if ($option.visionModel === 'custom') {
+    return textOrEmpty($option.custom_model_name);
+  }
+
+  return textOrEmpty($option.visionModel) || 'gpt-4o-mini';
+}
+
+function getOcrMode() {
+  return textOrEmpty($option.ocrMode) || 'markdown';
+}
+
+function getThinkingMode() {
+  return textOrEmpty($option.thinkingMode) || 'default';
+}
+
+
+function createUserPrompt() {
+  const ocrMode = getOcrMode();
+  if (ocrMode === 'custom') {
+    return textOrEmpty($option.ocrUserPrompt);
+  }
+  else if (ocrMode === 'markdown') {
+    return DEFAULT_MARKDOWN_USER_PROMPT;
+  } else {
+    return DEFAULT_PLAINTEXT_USER_PROMPT;
   }
 }
 
 function createSystemPrompt() {
-  if ($option.ocrMode === 'custom') {
-    return $option.ocrSystemPrompt 
+  const ocrMode = getOcrMode();
+  if (ocrMode === 'custom') {
+    return textOrEmpty($option.ocrSystemPrompt);
   }
-  else if ($option.ocrMode === 'markdown') {
-    return `You are a helpful assistant that can accurately extract and convert content from images into clean Markdown format.`;
+  else if (ocrMode === 'markdown') {
+    return DEFAULT_MARKDOWN_SYSTEM_PROMPT;
   } else {
-    return `You are a helpful assistant that can accurately extract and convert content from images into clean plaintext.`;
+    return DEFAULT_PLAINTEXT_SYSTEM_PROMPT;
   }
 }
 
 
-function buildBody(imageUrl) {
-  let model = '';
-  if ($option.visionModel === 'custom') {
-    model = $option.custom_model_name;
-  } else {
-    model = $option.visionModel;
-  }
-  return {
+function buildBody(imageUrl, model) {
+  const body = {
     model: model,
+    temperature: parseNumberOption($option.temperature, 0.7),
+    max_tokens: parseNumberOption($option.max_tokens, 4096),
     messages: [{
       role: 'system',
       content: createSystemPrompt(),
@@ -76,6 +126,13 @@ function buildBody(imageUrl) {
       }]
     }]
   };
+
+  const thinkingMode = getThinkingMode();
+  if (thinkingMode === 'enabled' || thinkingMode === 'disabled') {
+    body.thinking = { type: thinkingMode };
+  }
+
+  return body;
 }
 
 
@@ -85,48 +142,64 @@ async function ocr(query, completion) {
 
     const base64Image = imageData.toBase64();
     if (!base64Image) {
-      return completion({
-        error: {
-          type: 'param',
-          message: '图片数据转换失败',
-          addtion: JSON.stringify({ status: 400 })
-        },
-      });
+      return completeWithError(
+        completion,
+        'param',
+        '图片数据转换失败',
+        JSON.stringify({ status: 400 })
+      );
     }
 
     const imageUrl = `data:image/jpeg;base64,${base64Image}`;
 
-    const {apiKeys} = $option;
-    if (!apiKeys) {
-      return completion({
-        error: {
-          type: 'secretKey',
-          message: '配置错误 - 未填写 API Keys',
-          addtion: '请在插件配置中填写 API Keys',
-        },
-      });
-    }
-    const apiKeySelection = apiKeys.split(',').map((key) => key.trim());
-  
+    const apiKeySelection = getApiKeys();
     if (!apiKeySelection.length) {
-        return completion({
-            error: {
-                type: 'secretKey',
-                message: '配置错误 - 未填写 API Keys',
-                addtion: '请在插件配置中填写 API Keys',
-            },
-        });
+      return completeWithError(
+        completion,
+        'secretKey',
+        '配置错误 - 未填写 API Keys',
+        '请在插件配置中填写 API Keys'
+      );
     }
-  
+
+    const model = getModelName();
+    if (!model) {
+      return completeWithError(
+        completion,
+        'param',
+        '配置错误 - 未填写自定义模型名',
+        '请选择预设模型，或在插件配置中填写自定义模型名'
+      );
+    }
+
+    if (getOcrMode() === 'custom') {
+      if (!createSystemPrompt()) {
+        return completeWithError(
+          completion,
+          'param',
+          '配置错误 - 未填写 OCR 系统指令',
+          '自定义 OCR 模式需要填写系统指令'
+        );
+      }
+
+      if (!createUserPrompt()) {
+        return completeWithError(
+          completion,
+          'param',
+          '配置错误 - 未填写 OCR 用户指令',
+          '自定义 OCR 模式需要填写用户指令'
+        );
+      }
+    }
   
     const apiKey =
       apiKeySelection[Math.floor(Math.random() * apiKeySelection.length)];
 
     const header = buildHeader(apiKey);
-    const body = buildBody(imageUrl);
+    const body = buildBody(imageUrl, model);
 
-    const baseUrl = ($option.apiUrl || "https://api.openai.com").replace(/\/$/, "");
-    const urlPath = ($option.apiUrlPath || "/v1/chat/completions").replace(/^\//, "");
+    const baseUrl = (textOrEmpty($option.apiUrl) || "https://api.openai.com").replace(/\/$/, "");
+    const urlPath = (textOrEmpty($option.apiUrlPath) || "/v1/chat/completions").replace(/^\//, "");
     const fullUrl = `${baseUrl}/${urlPath}`;
     $http.request({
       method: 'POST',
@@ -134,14 +207,13 @@ async function ocr(query, completion) {
       header,
       body,
       handler: (result) => {
-        if (result.error || result.response.statusCode >= 400) {
+        if (result.error || !result.response || result.response.statusCode >= 400) {
           let errorMessage = 'OCR请求失败';
           /** @type {any} */
           const resultData = result.data;
           /** @type {any} */
           const resultError = result.error;
 
-          // 处理网络层错误
           if (resultError) {
             errorMessage = `网络请求失败: ${resultError.code || '未知错误码'}`;
            
@@ -149,13 +221,11 @@ async function ocr(query, completion) {
               errorMessage += `: ${resultData.error.message}`
             }
           }
-          // 处理HTTP错误响应
           else if (result.response) {
             const statusCode = result.response.statusCode;
             const statusText = statusCode || '未知错误';
             errorMessage = `HTTP错误 ${statusCode} (${statusText})`;
             
-            // 添加详细的错误信息
             const details = [];
             if (resultData?.error?.message) {
               details.push(`错误信息: ${resultData.error.message}`);
@@ -165,10 +235,8 @@ async function ocr(query, completion) {
               details.push(`调试信息: ${resultData.error.debugMessage}`);
             }
             
-            // 添加完整的响应体信息
             details.push(`完整响应: ${JSON.stringify(resultData, null, 2)}`);
             
-            // 记录详细日志
             $log.error(`请求失败:\n状态码: ${statusCode}\n状态描述: ${statusText}\n${details.join('\n')}`);
             
             if (details.length > 0) {
@@ -180,7 +248,7 @@ async function ocr(query, completion) {
             error: {
               type: 'api',
               message: errorMessage,
-              addtion: JSON.stringify(result),
+              addition: JSON.stringify(result),
             },
           });
           return;
@@ -194,7 +262,7 @@ async function ocr(query, completion) {
               error: {
                 type: 'api',
                 message: '未获取到有效的识别结果',
-                addtion: JSON.stringify(result),
+                addition: JSON.stringify(result),
               },
             });
             $log.error(`未获取到有效的识别结果: ${JSON.stringify(result)}`);
@@ -212,7 +280,7 @@ async function ocr(query, completion) {
             error: {
               type: 'api',
               message: '响应解析失败',
-              addtion: JSON.stringify(result),
+              addition: JSON.stringify(result),
             },
           });
         }
@@ -223,7 +291,7 @@ async function ocr(query, completion) {
       error: {
         type: error._type || 'unknown',
         message: error._message || '未知错误',
-        addtion: error._addition
+        addition: error._addition
       }
     });
   }
